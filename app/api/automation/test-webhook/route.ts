@@ -1,32 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-
-const PAYLOADS: Record<string, object> = {
-  "new-lead": {
-    lead_id:       "test-" + Date.now(),
-    user_id:       "test-user",
-    name:          "Test Lead (Automation Dashboard)",
-    phone:         "+971 50 000 0000",
-    email:         "test@aurexo.ai",
-    budget:        2_500_000,
-    location:      "Dubai Marina",
-    property_type: "apartment",
-    message:       "This is a test webhook from the Automation Dashboard.",
-    status:        "new",
-    created_at:    new Date().toISOString(),
-  },
-  "new-appointment": {
-    appointment_id:   "test-apt-" + Date.now(),
-    lead_id:          null,
-    lead_name:        "Test Lead",
-    phone:            "+971 50 000 0000",
-    email:            "test@aurexo.ai",
-    title:            "Test Appointment (Automation Dashboard)",
-    appointment_date: new Date(Date.now() + 86_400_000).toISOString(),
-    notes:            "This is a test webhook from the Automation Dashboard.",
-    status:           "scheduled",
-  },
-};
+import { sendNewLead } from "@/lib/n8n/send-new-lead";
+import { sendNewAppointment } from "@/lib/n8n/send-new-appointment";
+import { getUserProfile } from "@/lib/supabase/get-profile";
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const supabase = await createClient();
@@ -34,33 +10,43 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { workflow } = await req.json() as { workflow: string };
-  const payload = PAYLOADS[workflow];
-  if (!payload) return NextResponse.json({ error: "Unknown workflow" }, { status: 400 });
+  const profile = await getUserProfile();
 
-  const webhookUrls: Record<string, string | undefined> = {
-    "new-lead":         process.env.N8N_NEW_LEAD_WEBHOOK_URL,
-    "new-appointment":  process.env.N8N_APPOINTMENT_WEBHOOK_URL,
-  };
-
-  const url = webhookUrls[workflow];
-  if (!url) return NextResponse.json({ error: "Webhook URL not configured" }, { status: 400 });
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15_000);
-
-  try {
-    const res = await fetch(url, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify(payload),
-      signal:  controller.signal,
+  if (workflow === "new-lead") {
+    const result = await sendNewLead({
+      lead_id:            "test-" + Date.now(),
+      user_id:            user.id,
+      name:               "Test Lead (Automation Dashboard)",
+      phone:              "+971 50 000 0000",
+      email:              "test@aurexo.ai",
+      budget:             2_500_000,
+      location:           "Dubai Marina",
+      property_type:      "apartment",
+      message:            "This is a test from the Automation Dashboard.",
+      status:             "new",
+      created_at:         new Date().toISOString(),
+      notification_email: profile?.notification_email ?? user.email ?? null,
+      telegram_chat_id:   profile?.telegram_chat_id   ?? null,
     });
-    clearTimeout(timer);
-    const body = await res.text().catch(() => "");
-    return NextResponse.json({ ok: res.ok, status: res.status, body: body.slice(0, 500) });
-  } catch (err) {
-    clearTimeout(timer);
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json({ ok: false, error: msg }, { status: 500 });
+    return NextResponse.json({ ok: result.status === "sent", status: result.status, error: result.error });
   }
+
+  if (workflow === "new-appointment") {
+    const result = await sendNewAppointment({
+      appointment_id:     "test-apt-" + Date.now(),
+      lead_id:            null,
+      lead_name:          "Test Client",
+      phone:              "+971 50 000 0000",
+      email:              "test@aurexo.ai",
+      title:              "Test Appointment (Automation Dashboard)",
+      appointment_date:   new Date(Date.now() + 86_400_000).toISOString(),
+      notes:              "This is a test from the Automation Dashboard.",
+      status:             "scheduled",
+      notification_email: profile?.notification_email ?? user.email ?? null,
+      telegram_chat_id:   profile?.telegram_chat_id   ?? null,
+    });
+    return NextResponse.json({ ok: result.status === "sent", status: result.status, error: result.error });
+  }
+
+  return NextResponse.json({ error: "Unknown workflow" }, { status: 400 });
 }
